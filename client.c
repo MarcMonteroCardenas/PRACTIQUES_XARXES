@@ -77,6 +77,15 @@ int main(int argc, char *argv[]) {
 	while (1) {
 		memset(buffer, 0, sizeof(buffer)); // Netegem el buffer
 
+		//Variables del case 2
+		char cim[128];
+		float km = 0;
+		float temps = 0;
+		int desnivell = 0; 
+
+		// char buffer_cims[1024]; //Creem el buffer que ajuntará cada cadena 
+
+
 		// Menú principal
 		// Cal que implementeu un petit servei remot amb almenys 4 funcionalitats noves
 		// Definiu vosaltres mateixos les dades a enviar (demanar en el client, i analitzar al servidor) i rebre
@@ -129,7 +138,27 @@ int main(int argc, char *argv[]) {
 			break;
 
 		case 2:
-			// Implementar Opció 2
+			memset(buffer, 0, BUFFER_SIZE);
+			printf("Posa el nom del cim: ");
+			scanf("%127s", cim); //Ho posem així perquè sino es pot desbordar la variable cim
+
+			printf("Posa els quilometres: ");
+			scanf ("%f", &km);
+
+			printf("Posa el desnivell total: ");
+			scanf ("%d", &desnivell);
+
+			printf("Posa el temps que has trigat: ");
+			scanf ("%f", &temps);
+
+			snprintf(buffer, sizeof(buffer), "INSERTAR;%s;%f;%d;%f", cim, km, desnivell, temps); //Ajuntem les dades per enviarles al socket després
+			send(sock, buffer, strlen(buffer), 0);
+
+			memset(buffer,0, BUFFER_SIZE);
+			//Obte el missatge del servidor
+			recv(sock, buffer, BUFFER_SIZE, 0);
+			printf("Resposta server: %s\n", buffer);
+
 			break;
 
 		case 3:
