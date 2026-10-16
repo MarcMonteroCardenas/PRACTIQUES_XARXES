@@ -4,181 +4,190 @@
 #include <string.h>
 #include <unistd.h>
 #include <arpa/inet.h>
+#include <netdb.h>
 #include <errno.h>
 
 #define DEFAULT_PORT 8080
 #define DEFAULT_DOMAIN "localhost"
 #define BUFFER_SIZE 1024
+#define RESP_SIZE 4096
 
-int main(int argc, char *argv[]) {
-	int sock = 0;
-	struct sockaddr_in serv_addr;
-	char buffer[BUFFER_SIZE] = {0};
-	char cadena[BUFFER_SIZE] = "";
+// Envia un missatge i imprimeix la resposta. Retorna 0 si tot va bé, -1 si hi ha error.
+static int enviar_i_rebre(int sock, const char *msg)
+{
+    char resp[RESP_SIZE];
 
-	char *domini;
-	int port;
-	char *endptr;
+    // send(socket, dades, nombre_de_bytes, flags): envia 'msg' pel socket (flags 0 = cap opció especial)
+    if (send(sock, msg, strlen(msg), 0) < 0) {
+        perror("Error en enviar");
+        return -1;
+    }
 
-	if (argc == 1) {
-		// Cap argument -> valors per defecte
-		domini = DEFAULT_DOMAIN;
-		port = DEFAULT_PORT;
-		printf("Cap argument indicat. Utilitzant valors per defecte: %s %d\n", domini, port);
-	} 
-	else if (argc == 3) {
-		domini = argv[1];
+    // memset posa tot el buffer a 0 perquè no hi quedi brossa d'una resposta anterior
+    // i el text acabi sempre en '\0'.
+    memset(resp, 0, sizeof(resp));
 
-		errno = 0;
-		port = strtol(argv[2], &endptr, 10);
+    // recv(socket, buffer, mida_màxima, flags): espera dades del servidor.
+    // Llegim com a molt sizeof-1 bytes per reservar lloc al '\0'.
+    int n = recv(sock, resp, sizeof(resp) - 1, 0);
+    if (n < 0) {
+        perror("Error en rebre");
+        return -1;
+    }
+    if (n == 0) {
+        printf("El servidor ha tancat la connexió.\n");
+        return -1;
+    }
+    printf("Resposta del servidor:\n%s\n", resp);
+    return 0;
+}
 
-		// Comprovacions de validesa
-		if (errno != 0 || *endptr != '\0' || port < 1 || port > 65535) {
-			fprintf(stderr, "Error: el port ha de ser un enter entre 1 i 65535.\n");
-			exit(EXIT_FAILURE);
-		}
-	} 
-	else {
-		fprintf(stderr, "Ús: %s [nom_de_domini port]\n", argv[0]);
-		exit(EXIT_FAILURE);
-	}
+int main(int argc, char *argv[])
+{
+    int sock;
+    char buffer[BUFFER_SIZE];
+    char cadena[BUFFER_SIZE];
 
+    char *domini;
+    int port;
+    char *endptr;
 
+    if (argc == 1) {
+        domini = DEFAULT_DOMAIN;
+        port = DEFAULT_PORT;
+        printf("Cap argument indicat. Utilitzant valors per defecte: %s %d\n", domini, port);
+    } else if (argc == 3) {
+        domini = argv[1];
+        errno = 0;
+        port = strtol(argv[2], &endptr, 10);
+        if (errno != 0 || *endptr != '\0' || port < 1 || port > 65535) {
+            fprintf(stderr, "Error: el port ha de ser un enter entre 1 i 65535.\n");
+            exit(EXIT_FAILURE);
+        }
+    } else {
+        fprintf(stderr, "Ús: %s [nom_de_domini port]\n", argv[0]);
+        exit(EXIT_FAILURE);
+    }
 
-	// Crear el socket
-	// Afegiu comentari explicant els arguments, i de quines altres opcions hi ha
-	// per al segon d'ells (ara SOCK_STREAM)
-	
-	if ((sock = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
-		printf("\nError en crear el socket\n");
-		return -1;
-	}
+    // socket(domini, tipus, protocol)
+    //  - AF_INET: IPv4
+    //  - SOCK_STREAM: TCP (flux fiable). Alternativa: SOCK_DGRAM (UDP, datagrames
+    //    sense connexió ni garanties), o SOCK_RAW (accés directe a nivell IP).
+    //  - 0: protocol per defecte
+    if ((sock = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
+        perror("Error en crear el socket");
+        return -1;
+    }
 
-	// Afegiu comentari sobre què són aquests 3 paràmetres,
-	// per què s'utilitzen els valors que hi ha,
-	// i per què s'utilitza htons()
+    // getaddrinfo resol tant noms ("localhost") com IPs ("127.0.0.1"),
+    // cosa que inet_pton NO fa. Omple l'estructura sockaddr amb:
+    //  - família AF_INET, adreça IP resolta i port (ja en ordre de xarxa, equivalent a htons).
+    // htons() és necessari perquè el port ha d'anar en big-endian (ordre de xarxa).
+    struct addrinfo hints, *res;
+    char port_str[8];
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family = AF_INET;
+    hints.ai_socktype = SOCK_STREAM;
+    snprintf(port_str, sizeof(port_str), "%d", port);
 
-	serv_addr.sin_family = AF_INET;
-	serv_addr.sin_port = htons(port);
-	inet_pton(AF_INET, domini, &serv_addr.sin_addr);	// Convertir adreça IPv4 a binari
-   
+    int err = getaddrinfo(domini, port_str, &hints, &res);
+    if (err != 0) {
+        fprintf(stderr, "Error resolent '%s': %s\n", domini, gai_strerror(err));
+        close(sock);
+        return -1;
+    }
 
-	// Connectar amb el servidor
-	// Afegiu comentari explicant els arguments
-	if (connect(sock, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) < 0) {
-		printf("\nConnexio fallida\n");
-		return -1;
-	}
+    // connect(socket, adreça_servidor, mida_adreça): inicia la connexió TCP amb el servidor
+    if (connect(sock, res->ai_addr, res->ai_addrlen) < 0) {
+        perror("Connexió fallida");
+        freeaddrinfo(res);
+        close(sock);
+        return -1;
+    }
+    freeaddrinfo(res);
 
-	printf("Connectat al servidor. Podeu començar a enviar missatges.\n");
+    printf("Connectat al servidor. Podeu començar a enviar missatges.\n");
 
-	int option;
+    int option;
 
-	while (1) {
-		memset(buffer, 0, sizeof(buffer)); // Netegem el buffer
+    while (1) {
+        char cim[128];
+        float km, temps;
+        int desnivell;
 
-		//Variables del case 2
-		char cim[128];
-		float km = 0;
-		float temps = 0;
-		int desnivell = 0; 
+        printf("\nMenú principal:\n");
+        printf("1. Enviar missatge\n");
+        printf("2. Inserir ruta\n");
+        printf("3. Llistar rutes\n");
+        printf("4. Estadístiques\n");
+        printf("5. Eliminar ruta\n");
+        printf("6. Sortir\n");
+        printf("Opció: ");
 
-		// char buffer_cims[1024]; //Creem el buffer que ajuntará cada cadena 
+        if (scanf("%d", &option) != 1) {
+            while (getchar() != '\n');
+            printf("Opció invàlida\n");
+            continue;
+        }
+        while (getchar() != '\n');
 
+        switch (option)
+        {
+        case 1:
+        case 6:
+            if (option == 1) {
+                printf("Introdueix el missatge a enviar ('EXIT' per tancar la connexió i sortir): ");
+                if (fgets(cadena, BUFFER_SIZE, stdin) == NULL) strcpy(cadena, "EXIT");
+                cadena[strcspn(cadena, "\n")] = '\0';
+            } else {
+                strcpy(cadena, "EXIT");
+            }
 
-		// Menú principal
-		// Cal que implementeu un petit servei remot amb almenys 4 funcionalitats noves
-		// Definiu vosaltres mateixos les dades a enviar (demanar en el client, i analitzar al servidor) i rebre
-		// Si per donar més sentit al servei cal alguna opció més, la podeu afegir
-		// Deixeu l'opció 1 com a Enviar missatge i l'última per Sortir
+            enviar_i_rebre(sock, cadena);
 
-		printf("Menú principal:\n");
-		printf("1. Enviar missatge\n");
-		printf("2. Opció 2\n");
-		printf("3. Opció 3\n");
-		printf("4. Opció 4\n");
-		printf("5. Opció 5\n");
-		printf("6. Sortir\n");
-		printf("Opció: ");
+            if (strcmp(cadena, "EXIT") == 0) {
+                close(sock);
+                return 0;
+            }
+            break;
 
-		scanf("%d", &option);
-		while (getchar() != '\n');  // buida el buffer fins al salt de línia
+        case 2:
+            printf("Posa el nom del cim (sense espais): ");
+            if (scanf("%127s", cim) != 1) { while (getchar() != '\n'); break; }
+            printf("Posa els quilometres: ");
+            if (scanf("%f", &km) != 1) { while (getchar() != '\n'); printf("Dada incorrecta\n"); break; }
+            printf("Posa el desnivell total: ");
+            if (scanf("%d", &desnivell) != 1) { while (getchar() != '\n'); printf("Dada incorrecta\n"); break; }
+            printf("Posa el temps que has trigat (hores): ");
+            if (scanf("%f", &temps) != 1) { while (getchar() != '\n'); printf("Dada incorrecta\n"); break; }
+            while (getchar() != '\n');
 
-		switch (option)
-		{
-		case 1:
-		case 6:
-			if (option==1){
-				printf("Introdueix el missatge a enviar ('EXIT' per tancar el servidor i sortir): ");
-				fgets(cadena, BUFFER_SIZE, stdin);
-				cadena[strcspn(cadena, "\n")] = '\0';  // Eliminar \n final
-			} else {
-				strcpy(cadena, "EXIT");
-			}
+            snprintf(buffer, sizeof(buffer), "INSERTAR;%s;%f;%d;%f", cim, km, desnivell, temps);
+            enviar_i_rebre(sock, buffer);
+            break;
 
-			// Enviar missatge al servidor
-			// Afegiu control d'errors
-			// Afegiu comentari explicant els arguments
+        case 3:
+            enviar_i_rebre(sock, "LISTAR");
+            break;
 
-			send(sock, cadena, strlen(cadena), 0);
+        case 4:
+            enviar_i_rebre(sock, "ESTADISTIQUES");
+            break;
 
-			// Llegir resposta del servidor
-			// Afegiu un control d'errors al recv()
-			// Afegiu comentari explicant què fa i per què s'utilitza memset
-			// Afegiu comentari explicant els arguments de la crida a recv()
+        case 5:
+            printf("Nom del cim a eliminar: ");
+            if (scanf("%127s", cim) != 1) { while (getchar() != '\n'); break; }
+            while (getchar() != '\n');
+            snprintf(buffer, sizeof(buffer), "ELIMINAR;%s", cim);
+            enviar_i_rebre(sock, buffer);
+            break;
 
-			memset(buffer, 0, BUFFER_SIZE);
-			recv(sock, buffer, BUFFER_SIZE,0);
-			printf("Resposta del servidor: %s\n", buffer);
+        default:
+            printf("Opció invàlida\n");
+            break;
+        }
+    }
 
-			if (strcmp(cadena, "EXIT") == 0) {
-				close(sock);
-				return 0;
-			}
-			break;
-
-		case 2:
-			memset(buffer, 0, BUFFER_SIZE);
-			printf("Posa el nom del cim: ");
-			scanf("%127s", cim); //Ho posem així perquè sino es pot desbordar la variable cim
-
-			printf("Posa els quilometres: ");
-			scanf ("%f", &km);
-
-			printf("Posa el desnivell total: ");
-			scanf ("%d", &desnivell);
-
-			printf("Posa el temps que has trigat: ");
-			scanf ("%f", &temps);
-
-			snprintf(buffer, sizeof(buffer), "INSERTAR;%s;%f;%d;%f", cim, km, desnivell, temps); //Ajuntem les dades per enviarles al socket després
-			send(sock, buffer, strlen(buffer), 0);
-
-			memset(buffer,0, BUFFER_SIZE);
-			//Obte el missatge del servidor
-			recv(sock, buffer, BUFFER_SIZE, 0);
-			printf("Resposta server: %s\n", buffer);
-
-			break;
-
-		case 3:
-			// Implementar Opció 3
-			break;
-
-		case 4:
-			// Implementar Opció 4
-			break;
-
-		case 5:
-			// Implementar Opció 5
-			break;
-
-		default:
-			printf("Opció invàlida\n");
-			break;
-		}
-	}
-
-	close(sock);
-	return 0;
+    close(sock);
+    return 0;
 }
